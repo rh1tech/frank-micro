@@ -28,6 +28,10 @@
  * audio-cycle table platform-independent. */
 #define HAS_HDMI_AUDIO 1
 
+/* ---- Input capabilities ---- */
+#define HAS_PS2    1              /* PS/2 keyboard socket, plus a mouse socket */
+#define HAS_NESPAD 1              /* NES/SNES pad connector */
+
 /* ---- HDMI / VGA pins ---- */
 #define HDMI_BASE_PIN 12
 #define VGA_BASE_PIN  12

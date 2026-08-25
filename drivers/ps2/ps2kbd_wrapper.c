@@ -271,7 +271,9 @@ void ps2kbd_init(void) {
     // Mouse init is now driven from main.c (ps2_mouse_init_device())
     // so it runs in the right order relative to HDMI init — porting
     // the fix from murmsnes f5113d8 where PS/2 TX perturbs live HDMI.
+#ifdef HAS_PS2
     ps2_init(pio1, PS2_PIN_CLK, PS2_MOUSE_CLK);
+#endif
 
     queue_head = 0;
     queue_tail = 0;

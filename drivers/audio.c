@@ -81,7 +81,16 @@ i2s_config_t i2s_get_default_config(void) {
         .channel_count = 2,
         .data_pin = I2S_DATA_PIN,
         .clock_pin_base = I2S_CLOCK_PIN_BASE,
+        // PIO0 is the video serialisers on every board.  PIO1 is the PS/2 and
+        // NES pad drivers, which share it with I2S.  On the Fruit Jam there is
+        // no PS/2 socket and no pad connector, but PIO1 goes to the PIO-USB
+        // host instead, which needs all three of its state machines and its
+        // transmit program at instruction offset 0, so I2S moves to PIO2.
+#if defined(PLATFORM_FJ)
+        .pio = pio2,
+#else
         .pio = pio1,   // PIO1 - HDMI uses PIO0
+#endif
         .sm = 0,
         .dma_channel = 0,
         .dma_trans_count = 882,
@@ -96,7 +105,14 @@ void i2s_init(i2s_config_t *config) {
     dma_transfer_count = config->dma_trans_count;
 
     // Determine GPIO function based on which PIO we're using
-    uint8_t func = (config->pio == pio0) ? GPIO_FUNC_PIO0 : GPIO_FUNC_PIO1;
+    gpio_function_t func;
+    if (config->pio == pio0) {
+        func = GPIO_FUNC_PIO0;
+    } else if (config->pio == pio1) {
+        func = GPIO_FUNC_PIO1;
+    } else {
+        func = GPIO_FUNC_PIO2;
+    }
     gpio_set_function(config->data_pin, func);
     gpio_set_function(config->clock_pin_base, func);
     gpio_set_function(config->clock_pin_base + 1, func);

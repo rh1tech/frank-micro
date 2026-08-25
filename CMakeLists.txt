@@ -22,12 +22,13 @@ endif()
 
 cmake_minimum_required(VERSION 3.13)
 
-# Platform selection: m1, m2, z0
-set(PLATFORM "m2" CACHE STRING "Target platform: m1, m2, z0")
-set_property(CACHE PLATFORM PROPERTY STRINGS m1 m2 z0)
+# Platform selection: m1, m2, z0, fj
+set(PLATFORM "m2" CACHE STRING "Target platform: m1, m2, z0, fj")
+set_property(CACHE PLATFORM PROPERTY STRINGS m1 m2 z0 fj)
 
-if(NOT PLATFORM STREQUAL "m1" AND NOT PLATFORM STREQUAL "m2" AND NOT PLATFORM STREQUAL "z0")
-    message(FATAL_ERROR "Unknown PLATFORM '${PLATFORM}' — must be m1, m2, or z0")
+if(NOT PLATFORM STREQUAL "m1" AND NOT PLATFORM STREQUAL "m2"
+   AND NOT PLATFORM STREQUAL "z0" AND NOT PLATFORM STREQUAL "fj")
+    message(FATAL_ERROR "Unknown PLATFORM '${PLATFORM}' — must be m1, m2, z0, or fj")
 endif()
 
 set(CPU_SPEED "252" CACHE STRING "CPU clock in MHz")
@@ -45,6 +46,11 @@ if(HDMI_DRIVER STREQUAL "COMPOSITE" AND PLATFORM STREQUAL "z0")
     message(FATAL_ERROR "Composite TV is not supported on the Z0 platform")
 endif()
 
+# The Fruit Jam has no video DAC on the DVI pins and no composite connector.
+if(HDMI_DRIVER STREQUAL "COMPOSITE" AND PLATFORM STREQUAL "fj")
+    message(FATAL_ERROR "Composite TV is not supported on the Fruit Jam platform")
+endif()
+
 # Composite-TV needs ~378 MHz: the TV scanline callback fires via a HW-alarm
 # dispatcher at 30 kHz, and at 252 MHz the dispatch overhead alone consumes
 # most of each ~32 us window (matches frank-cpc).
@@ -57,6 +63,17 @@ if(PLATFORM STREQUAL "z0")
     set(PICO_BOARD_HEADER_DIRS ${CMAKE_CURRENT_LIST_DIR}/src/boards CACHE PATH "" FORCE)
     set(PICO_BOARD "waveshare_rp2350_pizero" CACHE STRING "Board type" FORCE)
     set(PICO_PLATFORM "rp2350-arm-s" CACHE STRING "Pico platform" FORCE)
+    if(CPU_SPEED GREATER "300")
+        set(CPU_SPEED "252" CACHE STRING "CPU clock in MHz" FORCE)
+    endif()
+elseif(PLATFORM STREQUAL "fj")
+    # The Pico SDK ships this board header (2.2.0 and later), so unlike the Z0
+    # there is no PICO_BOARD_HEADER_DIRS override.  RP2350B in the 80-pin
+    # package, so GPIO 0..47; the SDK header declares that with PICO_RP2350A 0.
+    set(PICO_BOARD "adafruit_fruit_jam" CACHE STRING "Board type" FORCE)
+    set(PICO_PLATFORM "rp2350-arm-s" CACHE STRING "Pico platform" FORCE)
+    # The PIO HDMI timing is calibrated against 252 MHz, and there is no
+    # composite driver here to want anything higher.
     if(CPU_SPEED GREATER "300")
         set(CPU_SPEED "252" CACHE STRING "CPU clock in MHz" FORCE)
     endif()
@@ -90,6 +107,18 @@ elseif(PLATFORM STREQUAL "z0")
     set(SD_MOSI 31)
     set(SD_MISO 40)
     set(HDMI_PIN 32)
+elseif(PLATFORM STREQUAL "fj")
+    # No TV_PIN: composite is rejected for this platform above, which is the
+    # same reason the z0 branch omits it.
+    # These four SD values are duplicated in src/board_fj.h and must agree;
+    # drivers/sdcard/sdcard.c only ever sees this copy.
+    set(PLATFORM_DEF PLATFORM_FJ)
+    set(BOARD_DEF BOARD_FJ)
+    set(SD_CS 39)
+    set(SD_SCK 34)
+    set(SD_MOSI 35)
+    set(SD_MISO 36)
+    set(HDMI_PIN 12)
 else()
     # m2
     set(PLATFORM_DEF PLATFORM_M2)
@@ -111,7 +140,57 @@ endif()
 # native USB port is then used for USB-CDC printf instead (PS/2 only input).
 option(USB_HID_ENABLED "Enable USB HID host (keyboard + gamepad)" OFF)
 
+# On the Fruit Jam the two USB-A sockets sit behind a CH334F hub whose upstream
+# pair is on GPIO 1 and 2.  Those are ordinary PIO pins, not the RP2350's
+# native USB controller, and the USB-C connector is wired as a device and
+# cannot be made a host, so PIO-USB is the only input path the board has.
+#
+# Pico-PIO-USB claims one PIO block with three state machines: one for
+# transmit, two for receive and end-of-packet.  Its transmit program has to sit
+# at instruction offset 0 of that block.  So:
+#
+#   PIO0  video, three TMDS serialisers
+#   PIO1  PIO-USB, three state machines, offset 0 free because this board has
+#         no PS/2 socket and no NES pad connector
+#   PIO2  I2S, once the codec driver exists
+#
+# PIO1 rather than PIO2 for USB is forced, not chosen: pio_usb.c maps its PIO
+# index with a one-bit test (`num == 0 ? pio0 : pio1`), so PIO2 is not
+# addressable from that library at the pinned version.
+# The DMA channel is pinned rather than left at the library's default of 0.
+# Pico-PIO-USB calls dma_claim_mask(), which panics on an already-claimed
+# channel, and it initialises before the video driver.  The video driver claims
+# dynamically and will simply skip whatever this took, but I2S hardcodes 10 and
+# 11 and PWM hardcodes 8 and 9, so 7 is the highest channel that collides with
+# nothing.
+if(PLATFORM STREQUAL "fj" AND USB_HID_ENABLED)
+    set(USB_HID_PIO_USB ON)
+    set(USB_HID_PIO_DP_PIN 1)
+    set(USB_HID_PIO_INDEX 1)
+    set(USB_HID_PIO_DMA_CH 7)
+endif()
+
 message(STATUS "frank-micro  Platform: ${PLATFORM}  CPU: ${CPU_SPEED} MHz  Flash: ${FLASH_SPEED} MHz  Voltage: ${CPU_VOLTAGE}  HDMI: ${HDMI_DRIVER}  USB_HID: ${USB_HID_ENABLED}")
+
+# Pico-PIO-USB, pinned as a submodule at lib/Pico-PIO-USB.  The Pico SDK's own
+# TinyUSB supplies all the build glue for it: hw/bsp/rp2040/family.cmake defines
+# a tinyusb_pico_pio_usb target that compiles the library, generates its two PIO
+# headers and adds hcd_pio_usb.c to the host stack.  It looks for the sources at
+# PICO_PIO_USB_PATH, so that has to be set before pico_sdk_init() runs, because
+# that is when the SDK processes its tinyusb directory.
+#
+# The submodule must be a version with RP2350 support.  The 0.6.1 that TinyUSB
+# 0.18.0 names in tools/get_deps.py does NOT have it, and without the RP2350-E9
+# workaround in pio_usb_bus_get_line_state() the host never detects a device on
+# the port: the board boots and displays perfectly and the keyboard is simply
+# dead.  Pinned at 5a37a66, which compiles clean against TinyUSB 0.18.0's
+# hcd_pio_usb.c.  See docs/HANDOFF.md before moving it.
+if(EXISTS ${CMAKE_CURRENT_LIST_DIR}/lib/Pico-PIO-USB/src/pio_usb.c)
+    set(PICO_PIO_USB_PATH ${CMAKE_CURRENT_LIST_DIR}/lib/Pico-PIO-USB)
+elseif(USB_HID_PIO_USB)
+    message(FATAL_ERROR
+        "PLATFORM=fj with USB_HID=1 needs the Pico-PIO-USB submodule. Run ./tools/setup.sh")
+endif()
 
 include(pico_sdk_import.cmake)
 
@@ -154,6 +233,7 @@ if(HDMI_DRIVER STREQUAL "HDMI_PIO_AUDIO")
         drivers/HDMI_vga.c
         drivers/test_pins.c
         drivers/crash_handler.c
+        drivers/tlv320dac3100.c
         drivers/audio.c
         drivers/audio_i2s_opt.S
         drivers/pwm_audio/pwm_audio.c
@@ -184,6 +264,7 @@ if(HDMI_DRIVER STREQUAL "HDMI_PIO_AUDIO")
         hardware_vreg
         hardware_exception
         hardware_watchdog
+        hardware_i2c
         frank_hdmi_sound
     )
 elseif(HDMI_DRIVER STREQUAL "COMPOSITE")
@@ -227,6 +308,7 @@ elseif(HDMI_DRIVER STREQUAL "COMPOSITE")
     add_library(drivers
         drivers/HDMI_tv.c
         drivers/crash_handler.c
+        drivers/tlv320dac3100.c
         drivers/audio.c
         drivers/audio_i2s_opt.S
         drivers/pwm_audio/pwm_audio.c
@@ -258,6 +340,7 @@ elseif(HDMI_DRIVER STREQUAL "COMPOSITE")
         hardware_vreg
         hardware_exception
         hardware_watchdog
+        hardware_i2c
         tv_driver
     )
 else()
@@ -268,6 +351,7 @@ else()
         drivers/HDMI_vga.c
         drivers/test_pins.c
         drivers/crash_handler.c
+        drivers/tlv320dac3100.c
         drivers/audio.c
         drivers/audio_i2s_opt.S
         drivers/pwm_audio/pwm_audio.c
@@ -298,6 +382,7 @@ else()
         hardware_vreg
         hardware_exception
         hardware_watchdog
+        hardware_i2c
     )
 endif()
 
@@ -559,11 +644,27 @@ if(USB_HID_ENABLED)
     target_link_libraries(frank-micro usbhid)
 endif()
 
-pico_enable_stdio_uart(frank-micro 0)
+# On the Fruit Jam, keep a console that does not depend on USB at all.  The
+# SDK board header puts UART1 on GPIO 8 and 9, both free on the 2x16 header, so
+# a USB-serial adapter there gives printf and the serial console even in a
+# USB_HID build, where the USB-CDC path is switched off below.  This matters
+# more here than on the other boards: the Fruit Jam is the only hardware this
+# project can test on, and a release build otherwise has no console at all.
+if(PLATFORM STREQUAL "fj")
+    pico_enable_stdio_uart(frank-micro 1)
+else()
+    pico_enable_stdio_uart(frank-micro 0)
+endif()
 
 # Dev builds (USB_HID off) use USB-CDC stdio for printf + the serial console;
 # release builds (USB_HID on) disable it because the USB HID host needs
 # exclusive use of the native USB controller.
+#
+# Note this coupling is a property of the other three boards, not of the Fruit
+# Jam: there the USB-A ports hang off PIO and the native controller is unused,
+# so the two could in principle coexist.  Doing so means running a TinyUSB
+# device stack and a host stack in one binary, which is not attempted here; the
+# UART console above is the answer instead.
 if(USB_HID_ENABLED)
     pico_enable_stdio_usb(frank-micro 0)
 else()

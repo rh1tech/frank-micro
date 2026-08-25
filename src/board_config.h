@@ -20,8 +20,10 @@
 #  include "board_z0.h"
 #elif defined(PLATFORM_M2)
 #  include "board_m2.h"
+#elif defined(PLATFORM_FJ)
+#  include "board_fj.h"
 #else
-#  error "No platform defined — set -DPLATFORM=m1|m2|z0 in CMake"
+#  error "No platform defined — set -DPLATFORM=m1|m2|z0|fj in CMake"
 #endif
 
 #ifndef CPU_CLOCK_MHZ
@@ -67,11 +69,18 @@ static inline uint get_psram_pin(void) {
 #endif
 }
 
-#ifdef PS2_MOUSE_CLK
-#  define HAS_PS2_MOUSE 1
-#else
-#  define PS2_MOUSE_CLK  PS2_PIN_CLK
-#  define PS2_MOUSE_DATA PS2_PIN_DATA
+/* A board with a PS/2 keyboard socket but no mouse socket aliases the mouse
+ * pins onto the keyboard's, which is what makes the mouse state machine in
+ * ps2_init() harmless there.  A board with no PS/2 at all (HAS_PS2 undefined)
+ * declares no PS/2 pins, so there is nothing to alias and every consumer is
+ * gated out instead. */
+#ifdef HAS_PS2
+#  ifdef PS2_MOUSE_CLK
+#    define HAS_PS2_MOUSE 1
+#  else
+#    define PS2_MOUSE_CLK  PS2_PIN_CLK
+#    define PS2_MOUSE_DATA PS2_PIN_DATA
+#  endif
 #endif
 
 /* BBC Micro framebuffer: 320×256 8-bit indexed colour.

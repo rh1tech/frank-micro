@@ -1,8 +1,8 @@
 #
-# frank-cpc — Amstrad CPC for RP2350
+# frank-micro — BBC Micro for RP2350
 #
 # Copyright (c) 2026 Mikhail Matveev <xtreme@rh1.tech>
-# https://github.com/rh1tech/frank-cpc
+# https://github.com/rh1tech/frank-micro
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
 
@@ -42,15 +42,25 @@ if(USB_HID_ENABLED)
         tinyusb_board
     )
     
-    # If using PIO-USB for secondary USB port
+    # PIO-USB host, for boards whose USB-A ports hang off PIO pins rather than
+    # the native USB controller.  Setting CFG_TUH_RPI_PIO_USB compiles
+    # hcd_rp2040.c out entirely, so the PIO port becomes the only host
+    # controller and the native controller is left free.
     if(USB_HID_PIO_USB)
+        if(NOT TARGET tinyusb_pico_pio_usb)
+            message(FATAL_ERROR
+                "USB_HID_PIO_USB is set but the tinyusb_pico_pio_usb target does not "
+                "exist. PICO_PIO_USB_PATH must point at a Pico-PIO-USB checkout "
+                "before pico_sdk_init(). Run ./tools/setup.sh")
+        endif()
         message(STATUS "USB HID using PIO-USB on GPIO${USB_HID_PIO_DP_PIN}")
         target_compile_definitions(usbhid INTERFACE
             CFG_TUH_RPI_PIO_USB=1
             USB_HOST_PIO_DP_PIN=${USB_HID_PIO_DP_PIN}
+            USB_HOST_PIO_INDEX=${USB_HID_PIO_INDEX}
+            USB_HOST_PIO_DMA_CH=${USB_HID_PIO_DMA_CH}
         )
-        # Would need to link pio_usb library here if using PIO-USB
-        # target_link_libraries(usbhid INTERFACE pio_usb)
+        target_link_libraries(usbhid INTERFACE tinyusb_pico_pio_usb)
     endif()
 else()
     message(STATUS "USB HID Host disabled (use -DUSB_HID_ENABLED=1 to enable)")

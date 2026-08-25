@@ -7,6 +7,9 @@
 #include "tusb.h"
 #include "usbhid.h"
 #include "xinput_host.h"
+#if CFG_TUH_RPI_PIO_USB
+#include "pio_usb.h"
+#endif
 #include <stdio.h>
 #include <string.h>
 
@@ -797,6 +800,30 @@ void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance, uint8_t cons
 //--------------------------------------------------------------------
 
 void usbhid_init(void) {
+#if CFG_TUH_RPI_PIO_USB
+    /* PIO-USB host.  The library defaults put all three of its state machines
+     * in PIO0 and its transmit DMA on channel 0, both of which are already
+     * taken here: PIO0 runs the video serialisers and the video driver claims
+     * DMA channels dynamically from the bottom.  So place it explicitly.
+     *
+     * pio_tx_num and pio_rx_num are separate fields but are set to the same
+     * block on purpose: one block, three state machines (transmit, receive,
+     * end-of-packet).  The transmit program must land at instruction offset 0
+     * of that block, so it has to be a block nothing else has programmed.
+     *
+     * This has to happen before tuh_init(), which is what calls
+     * pio_usb_host_init() with whatever configuration was handed over here. */
+    pio_usb_configuration_t pio_cfg = PIO_USB_DEFAULT_CONFIG;
+    pio_cfg.pin_dp     = USB_HOST_PIO_DP_PIN;
+    pio_cfg.pio_tx_num = USB_HOST_PIO_INDEX;
+    pio_cfg.pio_rx_num = USB_HOST_PIO_INDEX;
+    pio_cfg.sm_tx      = 0;
+    pio_cfg.sm_rx      = 1;
+    pio_cfg.sm_eop     = 2;
+    pio_cfg.tx_ch      = USB_HOST_PIO_DMA_CH;
+    tuh_configure(BOARD_TUH_RHPORT, TUH_CFGID_RPI_PIO_USB_CONFIGURATION, &pio_cfg);
+#endif
+
     tuh_init(BOARD_TUH_RHPORT);
     memset(&prev_kbd_report, 0, sizeof(prev_kbd_report));
     memset(&prev_mouse_report, 0, sizeof(prev_mouse_report));

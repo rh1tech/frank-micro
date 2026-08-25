@@ -15,15 +15,33 @@ Based on [B-em](https://b-em.bbcmicro.com/) by Tom Walker, with the Raspberry Pi
 
 ## Supported platforms
 
-Three RP2350 boards. Each has its own pin layout. All output HDMI video; HDMI-embedded audio is available on the default build.
+Four RP2350 boards. Each has its own pin layout. All output HDMI video; HDMI-embedded audio is available on the default build.
 
-| Platform | Board | Video | Audio backends |
-|----------|-------|-------|----------------|
-| m2 | [Murmulator 2.0](https://murmulator.ru) / [FRANK](https://rh1.tech/projects/frank?area=about) | HDMI (PIO) | HDMI, I2S, PWM |
-| m1 | Murmulator 1.x | HDMI (PIO) | HDMI, I2S, PWM |
-| z0 | [Waveshare RP2350-PiZero](https://www.waveshare.com/rp2350-pizero.htm) | HDMI (PIO) | HDMI, I2S, PWM |
+| Platform | Board | Video | Audio backends | Keyboard |
+|----------|-------|-------|----------------|----------|
+| m2 | [Murmulator 2.0](https://murmulator.ru) / [FRANK](https://rh1.tech/projects/frank?area=about) | HDMI (PIO) | HDMI, I2S, PWM | PS/2 or USB |
+| m1 | Murmulator 1.x | HDMI (PIO) | HDMI, I2S, PWM | PS/2 or USB |
+| z0 | [Waveshare RP2350-PiZero](https://www.waveshare.com/rp2350-pizero.htm) | HDMI (PIO) | HDMI, I2S, PWM | PS/2 or USB |
+| fj | [Adafruit Fruit Jam](https://www.adafruit.com/product/6200) | DVI (PIO) | HDMI, I2S | USB only |
 
 Select the platform at build time: `PLATFORM=m1 ./build.sh`. Default is `m2`.
+
+The Fruit Jam differs from the other three in ways that affect how you build and
+use it:
+
+- **It needs a USB keyboard, so build it with `USB_HID=1`.** There is no PS/2
+  socket and no NES pad connector. Plug the keyboard into either onboard USB-A
+  socket.
+- **No composite TV.** There is no video DAC on the DVI pins, so
+  `HDMI_DRIVER=COMPOSITE` is rejected at configure time.
+- **No PWM audio**, so the F12 menu offers two backends rather than three.
+  "HDMI" embeds sound in the DVI stream and comes out of the monitor; "I2S" goes
+  through the onboard TLV320DAC3100 codec to the headphone jack and the speaker
+  connector. On this platform the F12 volume drives the codec's analogue output
+  stage rather than scaling the samples.
+- **The serial console is on UART1, GPIO 8 and 9**, on the 2x16 header, rather
+  than on USB. This is the one platform where a `USB_HID=1` build still has a
+  console.
 
 ## Features
 
@@ -226,6 +244,7 @@ PLATFORM=m2 HDMI_DRIVER=HDMI_PIO ./build.sh       # M2, PIO HDMI/VGA (I2S/PWM au
 PLATFORM=m2 HDMI_DRIVER=COMPOSITE ./build.sh      # M2, composite PAL/NTSC TV (I2S/PWM audio)
 PLATFORM=m1 ./build.sh                            # Murmulator 1.x
 PLATFORM=z0 ./build.sh                            # Waveshare RP2350-PiZero
+PLATFORM=fj USB_HID=1 ./build.sh                  # Adafruit Fruit Jam (needs USB_HID=1)
 USB_HID=1 ./build.sh                              # Enable USB HID input
 ```
 
@@ -237,10 +256,10 @@ All options are environment variables (or CMake cache entries).
 
 | Variable      | Default          | Effect |
 |---------------|------------------|--------|
-| `PLATFORM`    | `m2`             | `m1` / `m2` / `z0` |
-| `HDMI_DRIVER` | `HDMI_PIO_AUDIO` | `HDMI_PIO_AUDIO` (HDMI-embedded audio) / `HDMI_PIO` (PIO HDMI **or** VGA, auto-detected from the ribbon; I2S/PWM audio) / `COMPOSITE` (software PAL/NTSC composite TV on `TV_PIN`; I2S/PWM audio; forces 378 MHz, not on `z0`) |
+| `PLATFORM`    | `m2`             | `m1` / `m2` / `z0` / `fj` |
+| `HDMI_DRIVER` | `HDMI_PIO_AUDIO` | `HDMI_PIO_AUDIO` (HDMI-embedded audio) / `HDMI_PIO` (PIO HDMI **or** VGA, auto-detected from the ribbon; I2S/PWM audio) / `COMPOSITE` (software PAL/NTSC composite TV on `TV_PIN`; I2S/PWM audio; forces 378 MHz, not on `z0` or `fj`) |
 | `CPU_SPEED`   | `252`            | Core clock in MHz |
-| `USB_HID`     | `0`              | `1` enables USB HID host (keyboard, gamepad, XInput). Disables USB CDC stdio. |
+| `USB_HID`     | `0`              | `1` enables USB HID host (keyboard, gamepad, XInput). Disables USB CDC stdio, except on `fj`, whose console is on UART1. Required on `fj`, which has no other input. |
 
 ### Release build
 
@@ -286,6 +305,8 @@ Third-party drivers and libraries:
 | NES/SNES pad PIO | shuichitakano / fhoedemakers | MIT | `drivers/nespad/` |
 | I2S PIO program | Raspberry Pi (Trading) Ltd. | BSD-3-Clause | `drivers/audio_i2s.pio` |
 | TinyUSB + HID host | Ha Thach | MIT | `drivers/usbhid/` |
+| Pico-PIO-USB (USB host on PIO pins) | sekigon-gonnoc | MIT | `lib/Pico-PIO-USB/` |
+| TLV320DAC3100 codec register sequence | Matt Evans (via adafruit/pico-mac) | MIT | `drivers/tlv320dac3100.c` |
 | XInput host | Ryan Wendland | MIT | `drivers/usbhid/xinput_host.*` |
 | dlmalloc | Doug Lea | CC0 / public domain | `drivers/dlmalloc.c` |
 
@@ -300,6 +321,8 @@ Thanks to:
 - **shuichitakano** and **fhoedemakers** for the NES/SNES PIO gamepad driver.
 - **ChaN** for FatFS, **elehobica** for the PIO-SPI SD driver, **mrmltr** for the PS/2 PIO driver.
 - **Ha Thach** for TinyUSB, **Ryan Wendland** for the XInput host driver.
+- **sekigon-gonnoc** for [Pico-PIO-USB](https://github.com/sekigon-gonnoc/Pico-PIO-USB), which is the only way to attach a keyboard to the Fruit Jam.
+- **Matt Evans** for [pico-umac](https://github.com/evansm7/pico-umac) and **Adafruit** for the [Fruit Jam fork](https://github.com/adafruit/pico-mac) of it, whose TLV320DAC3100 bring-up sequence the codec driver is adapted from.
 - **Doug Lea** for dlmalloc.
 - The **Murmulator** community for hardware designs and testing.
 - The **Raspberry Pi Foundation** for the RP2350 and the Pico SDK.

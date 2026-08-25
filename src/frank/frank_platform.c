@@ -31,6 +31,7 @@
 #include "psram_init.h"
 #include "ff.h"
 #include "ps2kbd_wrapper.h"
+#include "tlv320dac3100.h"
 
 #if defined(HDMI_PIO_AUDIO)
 #include "frank_hdmi.h"
@@ -97,9 +98,15 @@ void frank_perf_tick(void) {
     frank_disc_autoboot_tick();
 #endif
 
-    /* Poll the USB-CDC serial console for injected keystrokes.  Disabled when
-     * USB HID is enabled — the native USB port is then a HID host, not CDC. */
-#ifndef USB_HID_ENABLED
+    /* Poll the serial console for injected keystrokes.  It reads through
+     * whatever stdio driver the build registered, so what matters is whether
+     * there is one at all.
+     *
+     * On M1, M2 and Z0 a USB HID build turns the native USB port into a host,
+     * which leaves no CDC and so no stdin.  The Fruit Jam is the exception: its
+     * host is on PIO and its console is on UART1, so the console survives a USB
+     * HID build and the poll stays useful. */
+#if !defined(USB_HID_ENABLED) || defined(PLATFORM_FJ)
     frank_console_poll();
 #endif
 
@@ -341,8 +348,41 @@ int main(void) {
     bool psram_ok = psram_init(get_psram_pin());
     printf("PSRAM: %s\n", psram_ok ? "OK" : "not present (OK)");
 
+    /* Bare switch and socket contacts to ground, with no external resistors,
+     * so they need internal pull-ups.  Only the Fruit Jam has these today,
+     * which is why each one is behind the macro that declares it. */
+#ifdef SD_DETECT_PIN
+    gpio_init(SD_DETECT_PIN);
+    gpio_set_dir(SD_DETECT_PIN, GPIO_IN);
+    gpio_pull_up(SD_DETECT_PIN);
+#endif
+#ifdef BUTTON2_PIN
+    gpio_init(BUTTON2_PIN);
+    gpio_set_dir(BUTTON2_PIN, GPIO_IN);
+    gpio_pull_up(BUTTON2_PIN);
+#endif
+#ifdef BUTTON3_PIN
+    gpio_init(BUTTON3_PIN);
+    gpio_set_dir(BUTTON3_PIN, GPIO_IN);
+    gpio_pull_up(BUTTON3_PIN);
+#endif
+
+#ifdef HAS_PS2
     ps2kbd_init();
     printf("PS/2 keyboard ready\n");
+#endif
+
+#ifdef USB_HOST_5V_EN_PIN
+    /* The two USB-A sockets and the hub that feeds them sit on a switched 5 V
+     * rail, so they are dead until this pin goes high.  The hub then has to
+     * start its own 12 MHz crystal before it will answer, hence the settling
+     * delay.  Must happen before the host stack tries to enumerate. */
+    gpio_init(USB_HOST_5V_EN_PIN);
+    gpio_set_dir(USB_HOST_5V_EN_PIN, GPIO_OUT);
+    gpio_put(USB_HOST_5V_EN_PIN, 1);
+    sleep_ms(100);
+    printf("USB host 5V enabled on GPIO %d\n", USB_HOST_5V_EN_PIN);
+#endif
 
     /* USB HID host (keyboard + gamepad).  usbhid_wrapper_init() is a no-op
      * stub when USB HID is disabled, so this is safe to call unconditionally. */
@@ -351,9 +391,11 @@ int main(void) {
     printf("USB HID host ready\n");
 #endif
 
+#ifdef HAS_NESPAD
     /* Wired NES/SNES gamepad (independent of USB HID; always available). */
     frank_gamepad_init();
     printf("NES gamepad ready\n");
+#endif
 
     /* Video output selection.
      *  HDMI_PIO_AUDIO: force HDMI — the audio rides in the HDMI data-island
@@ -407,6 +449,16 @@ int main(void) {
      * (frank_perf_tick), once b-em's disc subsystem is initialised. */
     if (fr == FR_OK)
         frank_settings_load();
+
+    /* Audio codec.  On the Fruit Jam the headphone jack and the onboard speaker
+     * are both behind a TLV320DAC3100, which is silent until configured over
+     * I2C.  A no-op on the other three boards, whose I2S goes to a bare DAC.
+     *
+     * Must happen before the first audio call, which is the settings-apply on
+     * frank_perf_tick()'s first frame.  It is deliberately after video and the
+     * SD mount, so that a codec that does not answer can say so on a screen
+     * that already works, and cannot stop the machine booting. */
+    tlv320_init(31250);
 
     printf("Starting b-em...\n");
     _al_mangled_main(0, NULL);

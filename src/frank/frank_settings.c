@@ -65,7 +65,19 @@ static const char *AUDIO_LABELS[]   = { "HDMI", "I2S", "PWM" };
  *   HDMI_PIO_AUDIO — HDMI / I2S / PWM (HDMI data-island audio is available).
  *   HDMI_PIO, COMPOSITE — I2S / PWM only (no HDMI-embedded audio path), so
  *   the menu starts at FRANK_AUDIO_I2S and never offers "HDMI". */
-#if defined(HDMI_PIO_AUDIO)
+#if defined(PLATFORM_FJ)
+   /* Fruit Jam: the headphone jack and the onboard speaker are both behind the
+    * TLV320DAC3100 codec, which is an I2S sink, so there is no PWM output on
+    * the board at all and "PWM" comes out of the menu.  The enum order (HDMI,
+    * I2S, PWM) means first=HDMI and count=2 gives exactly HDMI and I2S. */
+#  if defined(HDMI_PIO_AUDIO)
+#    define AUDIO_FIRST_CHOICE  FRANK_AUDIO_HDMI
+#    define AUDIO_NUM_CHOICES   2
+#  else
+#    define AUDIO_FIRST_CHOICE  FRANK_AUDIO_I2S
+#    define AUDIO_NUM_CHOICES   1
+#  endif
+#elif defined(HDMI_PIO_AUDIO)
 #  define AUDIO_FIRST_CHOICE  FRANK_AUDIO_HDMI
 #  define AUDIO_NUM_CHOICES   3
 #else

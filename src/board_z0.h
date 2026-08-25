@@ -25,6 +25,10 @@
 #define HAS_I2S 1                 /* I2S on GPIO 10/11 */
 #define HAS_PWM 1
 
+/* ---- Input capabilities ---- */
+#define HAS_PS2    1              /* PS/2 keyboard socket; no mouse socket */
+#define HAS_NESPAD 1              /* NES/SNES pad connector */
+
 /* ---- HDMI / VGA pins ---- */
 #define HDMI_BASE_PIN 32
 #define VGA_BASE_PIN  32

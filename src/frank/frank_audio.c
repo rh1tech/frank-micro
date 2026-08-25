@@ -20,6 +20,7 @@
 #include "x_gui.h"
 
 #include "board_config.h"
+#include "tlv320dac3100.h"
 #include "frank_settings.h"
 #include "audio.h"          /* I2S DAC driver (drivers/audio.c)            */
 #include "pwm_audio.h"      /* PWM audio driver (drivers/pwm_audio)        */
@@ -59,13 +60,27 @@ static bool          s_i2s_inited = false;
 static i2s_config_t  s_i2s_cfg;
 static bool          s_pwm_inited = false;
 
-/* I2S and PWM share GPIO 10/11 (PWM_PIN0/1 == I2S clock pins).  Reassert the
- * pin function whenever we switch so the chosen driver actually reaches the
- * pads even after the other one claimed them. */
+/* On the M2 and Z0 the I2S clock pins are also PWM_PIN0/1, and on the M1 they
+ * are a different pair that still overlaps, so the two backends fight over the
+ * pads.  Reassert the pin function whenever we switch, so the chosen driver
+ * actually reaches the pads even after the other one claimed them.
+ *
+ * The Fruit Jam is the exception: I2S is on GPIO 24/26/27 to the codec and
+ * there is no PWM output on the board at all, so nothing collides.  The
+ * re-mux is harmless there and is kept for one code path.
+ *
+ * The PIO block has to match the one drivers/audio.c actually gave the state
+ * machine; getting it wrong leaves the pads driven by the wrong peripheral. */
+#if defined(PLATFORM_FJ)
+#  define I2S_GPIO_FUNC GPIO_FUNC_PIO2
+#else
+#  define I2S_GPIO_FUNC GPIO_FUNC_PIO1
+#endif
+
 static void i2s_claim_pins(void) {
-    gpio_set_function(I2S_DATA_PIN,           GPIO_FUNC_PIO1);
-    gpio_set_function(I2S_CLOCK_PIN_BASE,     GPIO_FUNC_PIO1);
-    gpio_set_function(I2S_CLOCK_PIN_BASE + 1, GPIO_FUNC_PIO1);
+    gpio_set_function(I2S_DATA_PIN,           I2S_GPIO_FUNC);
+    gpio_set_function(I2S_CLOCK_PIN_BASE,     I2S_GPIO_FUNC);
+    gpio_set_function(I2S_CLOCK_PIN_BASE + 1, I2S_GPIO_FUNC);
 }
 
 static void pwm_claim_pins(void) {
@@ -79,8 +94,11 @@ static void ensure_i2s(void) {
         s_i2s_cfg.sample_freq     = FRANK_AUDIO_RATE;
         s_i2s_cfg.dma_trans_count = FRANK_I2S_CHUNK;
         s_i2s_cfg.volume          = 0;   /* volume applied in software below */
-        i2s_init(&s_i2s_cfg);            /* also sets pins to PIO1 function   */
+        i2s_init(&s_i2s_cfg);            /* also sets the pins to a PIO function */
         s_i2s_inited = true;
+        /* The codec's PLL is clocked from BCLK, so it could not lock until
+         * now.  No-op on a board with no codec. */
+        tlv320_bclk_started();
     } else {
         i2s_claim_pins();
     }
@@ -130,11 +148,24 @@ void frank_audio_set_driver(int drv) {
 
     /* Silence the backend we are leaving (only matters when it keeps driving
      * its pins after the switch). */
-    if (old == FRANK_AUDIO_I2S && drv != FRANK_AUDIO_I2S) i2s_quiet();
+    if (old == FRANK_AUDIO_I2S && drv != FRANK_AUDIO_I2S) {
+        i2s_quiet();
+        /* Mute the codec's output amplifiers too.  i2s_quiet() only pushes
+         * silence; it does not stop the backend, so without this the amps stay
+         * live and hissing after the switch. */
+        tlv320_set_muted(true);
+    }
     if (old == FRANK_AUDIO_PWM && drv != FRANK_AUDIO_PWM) pwm_quiet();
 
     switch (drv) {
-        case FRANK_AUDIO_I2S: ensure_i2s(); i2s_claim_pins(); break;
+        case FRANK_AUDIO_I2S:
+            ensure_i2s();
+            i2s_claim_pins();
+            /* Unmute the codec's amplifiers once, here, rather than from the
+             * producer path.  This is the only I2C the I2S backend does in
+             * normal running, apart from a volume change. */
+            tlv320_set_muted(false);
+            break;
         case FRANK_AUDIO_PWM: ensure_pwm(); pwm_claim_pins(); break;
         case FRANK_AUDIO_HDMI:
         default:              break;   /* HDMI is always live on core1       */
@@ -203,11 +234,26 @@ void give_audio_buffer(struct audio_buffer_pool *ac, struct audio_buffer *buffer
 
     if (drv == FRANK_AUDIO_I2S) {
         if (!s_i2s_inited) return;
+
+        /* Where the volume is applied depends on what is downstream.
+         *
+         * With a codec, hand it the samples at full scale and let its analogue
+         * output stage do the attenuation: dividing 16-bit samples by up to 100
+         * throws away most of the resolution, and doing it in the analogue
+         * domain after the DAC costs none. Without a codec the I2S line feeds a
+         * bare DAC with no volume control of its own, so the software divide is
+         * the only option. */
+        bool codec = tlv320_present();
+        if (codec) tlv320_set_volume(vol);
+        int digital_vol = codec ? 100 : vol;
+
         /* Native 31250 Hz: build one fixed FRANK_I2S_CHUNK stereo block. */
         static int16_t stereo[FRANK_I2S_CHUNK * 2];
         uint32_t cnt = (n > FRANK_I2S_CHUNK) ? FRANK_I2S_CHUNK : n;
         for (uint32_t i = 0; i < cnt; i++) {
-            int16_t s = (int16_t)(((int32_t)src[i] * vol) / 100);
+            int16_t s = (digital_vol == 100)
+                        ? src[i]
+                        : (int16_t)(((int32_t)src[i] * digital_vol) / 100);
             stereo[i * 2]     = s;
             stereo[i * 2 + 1] = s;
         }
@@ -215,6 +261,7 @@ void give_audio_buffer(struct audio_buffer_pool *ac, struct audio_buffer *buffer
             stereo[i * 2] = 0;
             stereo[i * 2 + 1] = 0;
         }
+
         i2s_dma_write(&s_i2s_cfg, stereo);
         return;
     }

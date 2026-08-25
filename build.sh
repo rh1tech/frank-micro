@@ -8,7 +8,7 @@
 #
 #
 # Usage: PLATFORM=m1 USB_HID=1 ./build.sh [CPU_MHZ] [HDMI_DRIVER]
-#   PLATFORM:    m1, m2 (default), z0
+#   PLATFORM:    m1, m2 (default), z0, fj
 #   HDMI_DRIVER: HDMI_PIO_AUDIO (default, HDMI-embedded audio)
 #                HDMI_PIO       (PIO HDMI/VGA + I2S/PWM audio)
 #                COMPOSITE      (software PAL/NTSC TV + I2S/PWM audio; forces 378 MHz)

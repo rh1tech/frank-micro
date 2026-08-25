@@ -24,9 +24,24 @@ extern "C" {
 #define CFG_TUSB_MCU OPT_MCU_RP2040
 #endif
 
-// RHPort number used for host
+// 1 to run the host off PIO pins, 0 to run it off the native controller.
+// Set from CMake; see the PIO-USB section further down.
+#ifndef CFG_TUH_RPI_PIO_USB
+#define CFG_TUH_RPI_PIO_USB 0
+#endif
+
+// RHPort number used for host.
+//
+// hcd_pio_usb.c defines RHPORT_OFFSET 1, so TinyUSB root port 1 is PIO port 0.
+// With CFG_TUH_RPI_PIO_USB set, hcd_rp2040.c is compiled out entirely and the
+// PIO controller is the only host, so port 1 is the only valid choice; without
+// it the native controller is port 0.
 #ifndef BOARD_TUH_RHPORT
-#define BOARD_TUH_RHPORT 0
+#  if CFG_TUH_RPI_PIO_USB
+#    define BOARD_TUH_RHPORT 1
+#  else
+#    define BOARD_TUH_RHPORT 0
+#  endif
 #endif
 
 // RHPort max speed
@@ -44,16 +59,22 @@ extern "C" {
 // Enable this to use a GPIO-based USB Host while keeping native USB for CDC
 //--------------------------------------------------------------------
 
-// Set to 1 to use PIO-USB for Host (requires pio-usb library)
-// Set to 0 to use native USB port for Host (disables USB CDC stdio)
-#ifndef CFG_TUH_RPI_PIO_USB
-#define CFG_TUH_RPI_PIO_USB 0
-#endif
-
+// CFG_TUH_RPI_PIO_USB is set from CMake (drivers/usbhid/CMakeLists.txt), and
+// its default is established at the top of this file so the RHPort selection
+// above can test it.
 #if CFG_TUH_RPI_PIO_USB
-// PIO-USB GPIO pins (define these in board_config.h if using PIO-USB)
+// D+ pin; D- is the next pin up.  Set from CMake per platform.
 #ifndef USB_HOST_PIO_DP_PIN
-#define USB_HOST_PIO_DP_PIN 20  // D+ pin, D- will be DP+1
+#define USB_HOST_PIO_DP_PIN 20
+#endif
+// Which PIO block the library gets, and which DMA channel it claims for
+// transmit.  It needs three state machines in one block, with its transmit
+// program at instruction offset 0, so the block must be otherwise empty.
+#ifndef USB_HOST_PIO_INDEX
+#define USB_HOST_PIO_INDEX 1
+#endif
+#ifndef USB_HOST_PIO_DMA_CH
+#define USB_HOST_PIO_DMA_CH 0
 #endif
 #endif
 

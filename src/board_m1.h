@@ -25,6 +25,10 @@
 #define HAS_I2S 1                 /* External DAC on GPIO 26/27 */
 #define HAS_PWM 1
 
+/* ---- Input capabilities ---- */
+#define HAS_PS2    1              /* PS/2 keyboard socket; no mouse socket */
+#define HAS_NESPAD 1              /* NES/SNES pad connector */
+
 /* ---- HDMI / VGA pins ---- */
 #define HDMI_BASE_PIN 6
 #define VGA_BASE_PIN  6
