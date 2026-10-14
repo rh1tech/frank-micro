@@ -23,7 +23,7 @@ endif()
 cmake_minimum_required(VERSION 3.13)
 
 # Platform selection: m1, m2, z0, pc (Olimex RP2040-PICO-PC + Pico 2)
-set(PLATFORM "z0" CACHE STRING "Target platform: m1, m2, z0, pc")
+set(PLATFORM "m2" CACHE STRING "Target platform: m1, m2, z0, pc")
 set_property(CACHE PLATFORM PROPERTY STRINGS m1 m2 z0 pc)
 
 if(NOT PLATFORM STREQUAL "m1" AND NOT PLATFORM STREQUAL "m2" AND NOT PLATFORM STREQUAL "z0" AND NOT PLATFORM STREQUAL "pc")
@@ -31,7 +31,11 @@ if(NOT PLATFORM STREQUAL "m1" AND NOT PLATFORM STREQUAL "m2" AND NOT PLATFORM ST
 endif()
 
 set(CPU_SPEED "252" CACHE STRING "CPU clock in MHz")
-set(PSRAM_SPEED "100" CACHE STRING "PSRAM max frequency in MHz (unused, no PSRAM required)")
+# PSRAM is optional on every platform: psram_init() probes it at boot (CS1 on
+# GPIO8 for RP2350A, GPIO47 for RP2350B) and, when present, sideways ROMs and
+# FatFS buffers go there; without it everything stays in SRAM.  One build
+# works either way - nothing to switch here.
+set(PSRAM_SPEED "100" CACHE STRING "PSRAM max frequency in MHz (used only when a PSRAM chip is detected)")
 set(FLASH_SPEED "66"  CACHE STRING "Flash target max frequency in MHz")
 
 # Video driver: HDMI_PIO_AUDIO (HDMI-embedded audio), HDMI_PIO (PIO HDMI/VGA +
@@ -39,7 +43,10 @@ set(FLASH_SPEED "66"  CACHE STRING "Flash target max frequency in MHz")
 # here — before the voltage is derived below — so COMPOSITE can raise CPU_SPEED.
 # Z0 (Waveshare RP2350-PiZero): HDMI is on GPIO32..39, which only the HDMI_PIO
 # driver supports (PIO GPIO base 16); frank-hdmi-sound is wired for GPIO6..19.
-if(PLATFORM STREQUAL "z0")
+# M2 (Murmulator 2.0, m2p2 kit build): HDMI_PIO too - one firmware for HDMI and
+# VGA (autodetected on GPIO12/13), sound on the board's I2S DAC (TDA1387) or
+# PWM, chosen in F12.  HDMI_PIO_AUDIO stays available with -DHDMI_DRIVER=...
+if(PLATFORM STREQUAL "z0" OR PLATFORM STREQUAL "m2")
     set(HDMI_DRIVER_DEFAULT "HDMI_PIO")
 else()
     set(HDMI_DRIVER_DEFAULT "HDMI_PIO_AUDIO")
@@ -130,7 +137,8 @@ endif()
 # native USB port is then used for USB-CDC printf instead (PS/2 only input).
 # On the Olimex PICO-PC the USB-A port is the main keyboard port: ON by default.
 # On Z0 the keyboard goes to the native USB Type-C port (OTG adapter): ON too.
-if(PLATFORM STREQUAL "pc" OR PLATFORM STREQUAL "z0")
+# On M2 (m2p2 kit build) the USB keyboard on the Pico 2 port is the default.
+if(PLATFORM STREQUAL "pc" OR PLATFORM STREQUAL "z0" OR PLATFORM STREQUAL "m2")
     set(USB_HID_DEFAULT ON)
 else()
     set(USB_HID_DEFAULT OFF)
