@@ -6,14 +6,16 @@
 
 # Flash frank-micro to a connected Pico 2 (RP2350)
 
-FIRMWARE="${1:-./build/frank-micro.elf}"
+# Default: the newest ELF that CMake wrote into bin/<build type>/
+DEFAULT_FW=$(ls -t ./bin/*frank-micro*.elf ./bin/*/*frank-micro*.elf 2>/dev/null | head -1)
+FIRMWARE="${1:-${DEFAULT_FW:-./bin/frank-micro.elf}}"
 
 if [ ! -f "$FIRMWARE" ]; then
     FIRMWARE="${FIRMWARE%.elf}.uf2"
     if [ ! -f "$FIRMWARE" ]; then
         echo "Error: Firmware file not found"
         echo "Usage: $0 [firmware.elf|firmware.uf2]"
-        echo "Default: ./build/frank-micro.elf"
+        echo "Default: the newest bin/*/*frank-micro*.elf"
         exit 1
     fi
 fi

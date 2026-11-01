@@ -122,7 +122,14 @@ static void pwm_quiet(void) {
 
 void frank_audio_set_driver(int drv) {
     if (drv < 0 || drv >= FRANK_AUDIO_DRV_COUNT) drv = FRANK_AUDIO_DEFAULT;
+#if defined(PLATFORM_PC)
+    /* Olimex PICO-PC has no I2S DAC: route I2S (e.g. from a micro.ini written
+     * by another board's build) to the PWM jack. */
+    if (drv == FRANK_AUDIO_I2S) drv = FRANK_AUDIO_PWM;
 #if !defined(HDMI_PIO_AUDIO)
+    if (drv == FRANK_AUDIO_HDMI) drv = FRANK_AUDIO_PWM;
+#endif
+#elif !defined(HDMI_PIO_AUDIO)
     /* No HDMI-audio backend in the HDMI_PIO build — route it to the I2S DAC. */
     if (drv == FRANK_AUDIO_HDMI) drv = FRANK_AUDIO_I2S;
 #endif

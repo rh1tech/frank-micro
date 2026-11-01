@@ -57,7 +57,10 @@ typedef enum {
 /* Default audio backend depends on the selected video/audio driver:
  *   HDMI_PIO_AUDIO — audio is embedded in the HDMI stream (FRANK_AUDIO_HDMI).
  *   HDMI_PIO       — no HDMI-audio path exists, so default to the I2S DAC. */
-#if defined(HDMI_PIO_AUDIO)
+#if defined(PLATFORM_PC)
+/* Olimex PICO-PC: no I2S DAC; the analog jack (PWM) is the default output. */
+#  define FRANK_AUDIO_DEFAULT FRANK_AUDIO_PWM
+#elif defined(HDMI_PIO_AUDIO)
 #  define FRANK_AUDIO_DEFAULT FRANK_AUDIO_HDMI
 #else
 #  define FRANK_AUDIO_DEFAULT FRANK_AUDIO_I2S

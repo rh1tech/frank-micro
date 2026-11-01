@@ -78,14 +78,36 @@ static volatile bool dma_running = false;
 static bool initialized = false;
 static uint audio_slice = 0;
 static bool stereo_same_slice = false;
+
+/* Second channel on another slice (Olimex PICO-PC: left GPIO28 = slice 6 A,
+ * right GPIO27 = slice 5 B).  A second ping-pong DMA pair (C/D), paced by
+ * that slice's wrap DREQ, mirrors the same buffers into its CC register, so
+ * both pins carry the audio.  Both slices run in phase from the same clock. */
+static uint mirror_slice = 0;
+static int pwm_dma_ch_c = -1;
+static int pwm_dma_ch_d = -1;
 static uint32_t cached_sample_rate = 0;
 static volatile uint32_t dma_xfer_count = 0;
 
 static void __not_in_flash_func(pwm_audio_dma_irq_handler)(void) {
     uint32_t ints = dma_hw->ints2;
     uint32_t mask = (1u << PWM_DMA_CH_A) | (1u << PWM_DMA_CH_B);
+    if (pwm_dma_ch_c >= 0)
+        mask |= (1u << pwm_dma_ch_c) | (1u << pwm_dma_ch_d);
     ints &= mask;
     if (!ints) return;
+
+    /* Mirror pair: only re-arm (buffers are freed by the A/B pair). */
+    if (pwm_dma_ch_c >= 0 && (ints & (1u << pwm_dma_ch_c))) {
+        dma_hw->ints2 = (1u << pwm_dma_ch_c);
+        dma_channel_set_read_addr(pwm_dma_ch_c, dma_bufs[0], false);
+        dma_channel_set_trans_count(pwm_dma_ch_c, dma_xfer_count, false);
+    }
+    if (pwm_dma_ch_d >= 0 && (ints & (1u << pwm_dma_ch_d))) {
+        dma_hw->ints2 = (1u << pwm_dma_ch_d);
+        dma_channel_set_read_addr(pwm_dma_ch_d, dma_bufs[1], false);
+        dma_channel_set_trans_count(pwm_dma_ch_d, dma_xfer_count, false);
+    }
 
     if (ints & (1u << PWM_DMA_CH_A)) {
         dma_hw->ints2 = (1u << PWM_DMA_CH_A);
@@ -127,14 +149,15 @@ void pwm_audio_init(uint pin_l, uint pin_r, uint32_t sample_rate) {
     if (stereo_same_slice) {
         gpio_set_function(pin_r, GPIO_FUNC_PWM);
     } else {
-        /* Different slice — drive it with its own static mid-level PWM so
-         * the pin doesn't dangle. Only one channel actually carries audio. */
+        /* Different slice — configured like the audio slice and fed by the
+         * mirror DMA pair below; enabled together with the audio slice. */
         pwm_config cfg2 = pwm_get_default_config();
         pwm_config_set_clkdiv(&cfg2, 1.0f);
         pwm_config_set_wrap(&cfg2, (uint16_t)pwm_wrap);
         gpio_set_function(pin_r, GPIO_FUNC_PWM);
-        pwm_init(slice_r, &cfg2, true);
-        pwm_set_gpio_level(pin_r, (uint16_t)pwm_center);
+        pwm_init(slice_r, &cfg2, false);
+        pwm_set_both_levels(slice_r, (uint16_t)pwm_center, (uint16_t)pwm_center);
+        mirror_slice = slice_r;
     }
 
     /* Configure audio slice: wraps at sample_rate, drives the pin AND
@@ -194,12 +217,44 @@ void pwm_audio_init(uint pin_l, uint pin_r, uint32_t sample_rate) {
     dma_channel_configure(PWM_DMA_CH_B, &cfg_b, (void *)cc_addr,
                           dma_bufs[1], dma_xfer_count, false);
 
+    if (!stereo_same_slice) {
+        pwm_dma_ch_c = dma_claim_unused_channel(true);
+        pwm_dma_ch_d = dma_claim_unused_channel(true);
+        uint dreq_m = DREQ_PWM_WRAP0 + mirror_slice;
+        volatile uint32_t *cc_m = &pwm_hw->slice[mirror_slice].cc;
+
+        dma_channel_config cfg_c = dma_channel_get_default_config(pwm_dma_ch_c);
+        channel_config_set_read_increment(&cfg_c, true);
+        channel_config_set_write_increment(&cfg_c, false);
+        channel_config_set_transfer_data_size(&cfg_c, DMA_SIZE_32);
+        channel_config_set_dreq(&cfg_c, dreq_m);
+        channel_config_set_chain_to(&cfg_c, pwm_dma_ch_d);
+
+        dma_channel_config cfg_d = dma_channel_get_default_config(pwm_dma_ch_d);
+        channel_config_set_read_increment(&cfg_d, true);
+        channel_config_set_write_increment(&cfg_d, false);
+        channel_config_set_transfer_data_size(&cfg_d, DMA_SIZE_32);
+        channel_config_set_dreq(&cfg_d, dreq_m);
+        channel_config_set_chain_to(&cfg_d, pwm_dma_ch_c);
+
+        dma_channel_configure(pwm_dma_ch_c, &cfg_c, (void *)cc_m,
+                              dma_bufs[0], dma_xfer_count, false);
+        dma_channel_configure(pwm_dma_ch_d, &cfg_d, (void *)cc_m,
+                              dma_bufs[1], dma_xfer_count, false);
+    }
+
     dma_hw->ints2 = (1u << PWM_DMA_CH_A) | (1u << PWM_DMA_CH_B);
+    if (pwm_dma_ch_c >= 0)
+        dma_hw->ints2 = (1u << pwm_dma_ch_c) | (1u << pwm_dma_ch_d);
     irq_set_exclusive_handler(PWM_AUDIO_DMA_IRQ, pwm_audio_dma_irq_handler);
     irq_set_priority(PWM_AUDIO_DMA_IRQ, 0x80);
     irq_set_enabled(PWM_AUDIO_DMA_IRQ, true);
     dma_irqn_set_channel_enabled(PWM_AUDIO_IRQ_IDX, PWM_DMA_CH_A, true);
     dma_irqn_set_channel_enabled(PWM_AUDIO_IRQ_IDX, PWM_DMA_CH_B, true);
+    if (pwm_dma_ch_c >= 0) {
+        dma_irqn_set_channel_enabled(PWM_AUDIO_IRQ_IDX, pwm_dma_ch_c, true);
+        dma_irqn_set_channel_enabled(PWM_AUDIO_IRQ_IDX, pwm_dma_ch_d, true);
+    }
 
     preroll_count = 0;
     bufs_free_mask = (1u << DMA_BUFFER_COUNT) - 1u;
@@ -208,7 +263,13 @@ void pwm_audio_init(uint pin_l, uint pin_r, uint32_t sample_rate) {
     /* Kick the audio slice — DREQ pulses start flowing immediately. The
      * DMA chain stays idle until preroll_count reaches PREROLL_BUFFERS
      * and commit_buf() calls dma_channel_start(). */
-    pwm_set_enabled(audio_slice, true);
+    if (stereo_same_slice) {
+        pwm_set_enabled(audio_slice, true);
+    } else {
+        pwm_set_counter(audio_slice, 0);
+        pwm_set_counter(mirror_slice, 0);
+        pwm_set_mask_enabled(pwm_hw->en | (1u << audio_slice) | (1u << mirror_slice));
+    }
 
     initialized = true;
 
@@ -253,7 +314,10 @@ static void commit_buf(uint8_t idx, uint32_t frame_count) {
     if (!dma_running) {
         preroll_count++;
         if (preroll_count >= PREROLL_BUFFERS) {
-            dma_channel_start(PWM_DMA_CH_A);
+            if (pwm_dma_ch_c >= 0)
+                dma_start_channel_mask((1u << PWM_DMA_CH_A) | (1u << pwm_dma_ch_c));
+            else
+                dma_channel_start(PWM_DMA_CH_A);
             dma_running = true;
         }
     }

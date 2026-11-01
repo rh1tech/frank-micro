@@ -65,13 +65,26 @@ static const char *AUDIO_LABELS[]   = { "HDMI", "I2S", "PWM" };
  *   HDMI_PIO_AUDIO — HDMI / I2S / PWM (HDMI data-island audio is available).
  *   HDMI_PIO, COMPOSITE — I2S / PWM only (no HDMI-embedded audio path), so
  *   the menu starts at FRANK_AUDIO_I2S and never offers "HDMI". */
-#if defined(HDMI_PIO_AUDIO)
-#  define AUDIO_FIRST_CHOICE  FRANK_AUDIO_HDMI
-#  define AUDIO_NUM_CHOICES   3
+#if defined(PLATFORM_PC) && defined(HDMI_PIO_AUDIO)
+/* Olimex PICO-PC: no I2S DAC — HDMI or the PWM jack only. */
+static const uint8_t AUDIO_CHOICES[] = { FRANK_AUDIO_HDMI, FRANK_AUDIO_PWM };
+#elif defined(PLATFORM_PC)
+static const uint8_t AUDIO_CHOICES[] = { FRANK_AUDIO_PWM };
+#elif defined(PLATFORM_Z0)
+static const uint8_t AUDIO_CHOICES[] = { FRANK_AUDIO_I2S };
+#elif defined(HDMI_PIO_AUDIO)
+static const uint8_t AUDIO_CHOICES[] = { FRANK_AUDIO_HDMI, FRANK_AUDIO_I2S, FRANK_AUDIO_PWM };
 #else
-#  define AUDIO_FIRST_CHOICE  FRANK_AUDIO_I2S
-#  define AUDIO_NUM_CHOICES   2
+static const uint8_t AUDIO_CHOICES[] = { FRANK_AUDIO_I2S, FRANK_AUDIO_PWM };
 #endif
+#define AUDIO_NUM_CHOICES ((int)(sizeof(AUDIO_CHOICES) / sizeof(AUDIO_CHOICES[0])))
+
+/* Index of the current driver in AUDIO_CHOICES (0 if it is not offered). */
+static int audio_choice_index(uint8_t drv) {
+    for (int i = 0; i < AUDIO_NUM_CHOICES; ++i)
+        if (AUDIO_CHOICES[i] == drv) return i;
+    return 0;
+}
 static const char *MODE_LABELS[]    = {
     "MODE 0", "MODE 1", "MODE 2", "MODE 3",
     "MODE 4", "MODE 5", "MODE 6", "MODE 7"
@@ -136,11 +149,7 @@ const char *frank_settings_value_label(frank_setting_id_t id) {
             return VOLUME_LABELS[idx];
         }
         case FRANK_SETTING_AUDIO: {
-            int idx = (int)g_frank_settings.audio_driver;
-            if (idx < AUDIO_FIRST_CHOICE ||
-                idx >= AUDIO_FIRST_CHOICE + AUDIO_NUM_CHOICES)
-                idx = AUDIO_FIRST_CHOICE;
-            return AUDIO_LABELS[idx];
+            return AUDIO_LABELS[AUDIO_CHOICES[audio_choice_index(g_frank_settings.audio_driver)]];
         }
         case FRANK_SETTING_LIMIT_SPEED:
             return ONOFF_LABELS[g_frank_settings.limit_speed & 1];
@@ -201,7 +210,21 @@ static void apply_monitor(void) {
 }
 
 void frank_settings_apply_live(void) {
+#if defined(PLATFORM_PC)
+    /* No I2S DAC on the Olimex PICO-PC: fold it onto the PWM jack. */
+    if (g_frank_settings.audio_driver == FRANK_AUDIO_I2S)
+        g_frank_settings.audio_driver = FRANK_AUDIO_PWM;
 #if !defined(HDMI_PIO_AUDIO)
+    if (g_frank_settings.audio_driver == FRANK_AUDIO_HDMI)
+        g_frank_settings.audio_driver = FRANK_AUDIO_PWM;
+#endif
+#elif defined(PLATFORM_Z0)
+    /* Waveshare RP2350-PiZero: no analog output, sound goes to the I2S DAC
+     * module on GP10..GP12.  Fold PWM and HDMI onto I2S, so a micro.ini written
+     * by a PICO-PC build (audio=pwm) on a shared SD card does not mute it. */
+    if (g_frank_settings.audio_driver != FRANK_AUDIO_I2S)
+        g_frank_settings.audio_driver = FRANK_AUDIO_I2S;
+#elif !defined(HDMI_PIO_AUDIO)
     /* HDMI audio is unavailable in the HDMI_PIO build; fold any persisted
      * "HDMI" selection (e.g. from a micro.ini written by an HDMI_PIO_AUDIO
      * build) onto the I2S DAC so the option is never silently dead. */
@@ -248,12 +271,11 @@ void frank_settings_step(frank_setting_id_t id, int delta) {
         case FRANK_SETTING_AUDIO: {
             /* Cycle within the build's allowed audio backends only — the
              * "HDMI" option is excluded entirely in non-HDMI-audio builds. */
-            int cur = (int)g_frank_settings.audio_driver - AUDIO_FIRST_CHOICE;
-            if (cur < 0 || cur >= AUDIO_NUM_CHOICES) cur = 0;
+            int cur = audio_choice_index(g_frank_settings.audio_driver);
             cur += delta;
             while (cur < 0)                 cur += AUDIO_NUM_CHOICES;
             while (cur >= AUDIO_NUM_CHOICES) cur -= AUDIO_NUM_CHOICES;
-            g_frank_settings.audio_driver = (uint8_t)(AUDIO_FIRST_CHOICE + cur);
+            g_frank_settings.audio_driver = AUDIO_CHOICES[cur];
             frank_audio_set_driver(g_frank_settings.audio_driver);
             break;
         }

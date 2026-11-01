@@ -304,6 +304,20 @@ static void boot_halt_if_required(FRESULT sd_result) {
 }
 
 int main(void) {
+#if defined(PLATFORM_PC) && defined(PICO_SMPS_MODE_PIN)
+    /* The PICO-PC carries a Raspberry Pi Pico 2, whose 3.3 V SMPS drops
+     * into power-save (PFM) mode at light load unless GPIO23 is driven
+     * high. At 252 MHz / default core voltage the load is light enough for
+     * PFM, and its load-dependent ripple on 3.3 V reaches the PWM audio
+     * outputs (PWM level = duty x 3.3 V) as hiss that follows every SD card
+     * access or other activity. Forcing PWM mode (as the Pico 2 datasheet
+     * recommends for low-noise analog work) keeps the rail quiet. The
+     * emulators that run quietly on this board clock at 378-504 MHz with a
+     * raised core voltage, where the SMPS stays out of PFM anyway. */
+    gpio_init(PICO_SMPS_MODE_PIN);
+    gpio_set_dir(PICO_SMPS_MODE_PIN, GPIO_OUT);
+    gpio_put(PICO_SMPS_MODE_PIN, 1);
+#endif
     frank_enable_fpu();
 #if CPU_CLOCK_MHZ > 252
     vreg_disable_voltage_limit();
@@ -370,8 +384,8 @@ int main(void) {
 #else
     {
         int link = testPins(HDMI_BASE_PIN, HDMI_BASE_PIN + 1);
-#if defined(PLATFORM_Z0)
-        SELECT_VGA = false;            /* Z0 has no VGA ribbon */
+#if defined(PLATFORM_Z0) || defined(PLATFORM_PC)
+        SELECT_VGA = false;            /* Z0 and Olimex PICO-PC: HDMI only */
 #else
         SELECT_VGA = (link == 0) || (link == 0x1F);
 #endif

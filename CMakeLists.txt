@@ -22,27 +22,45 @@ endif()
 
 cmake_minimum_required(VERSION 3.13)
 
-# Platform selection: m1, m2, z0
-set(PLATFORM "m2" CACHE STRING "Target platform: m1, m2, z0")
-set_property(CACHE PLATFORM PROPERTY STRINGS m1 m2 z0)
+# Platform selection: m1, m2, z0, pc (Olimex RP2040-PICO-PC + Pico 2)
+set(PLATFORM "m2" CACHE STRING "Target platform: m1, m2, z0, pc")
+set_property(CACHE PLATFORM PROPERTY STRINGS m1 m2 z0 pc)
 
-if(NOT PLATFORM STREQUAL "m1" AND NOT PLATFORM STREQUAL "m2" AND NOT PLATFORM STREQUAL "z0")
-    message(FATAL_ERROR "Unknown PLATFORM '${PLATFORM}' — must be m1, m2, or z0")
+if(NOT PLATFORM STREQUAL "m1" AND NOT PLATFORM STREQUAL "m2" AND NOT PLATFORM STREQUAL "z0" AND NOT PLATFORM STREQUAL "pc")
+    message(FATAL_ERROR "Unknown PLATFORM '${PLATFORM}' — must be m1, m2, z0 or pc")
 endif()
 
 set(CPU_SPEED "252" CACHE STRING "CPU clock in MHz")
-set(PSRAM_SPEED "100" CACHE STRING "PSRAM max frequency in MHz (unused, no PSRAM required)")
+# PSRAM is optional on every platform: psram_init() probes it at boot (CS1 on
+# GPIO8 for RP2350A, GPIO47 for RP2350B) and, when present, sideways ROMs and
+# FatFS buffers go there; without it everything stays in SRAM.  One build
+# works either way - nothing to switch here.
+set(PSRAM_SPEED "100" CACHE STRING "PSRAM max frequency in MHz (used only when a PSRAM chip is detected)")
 set(FLASH_SPEED "66"  CACHE STRING "Flash target max frequency in MHz")
 
 # Video driver: HDMI_PIO_AUDIO (HDMI-embedded audio), HDMI_PIO (PIO HDMI/VGA +
 # I2S/PWM audio) or COMPOSITE (software PAL/NTSC TV + I2S/PWM audio).  Declared
 # here — before the voltage is derived below — so COMPOSITE can raise CPU_SPEED.
-set(HDMI_DRIVER "HDMI_PIO_AUDIO" CACHE STRING "HDMI driver: HDMI_PIO_AUDIO, HDMI_PIO or COMPOSITE")
+# Z0 (Waveshare RP2350-PiZero): HDMI is on GPIO32..39, which only the HDMI_PIO
+# driver supports (PIO GPIO base 16); frank-hdmi-sound is wired for GPIO6..19.
+# M2 (Murmulator 2.0, m2p2 kit build): HDMI_PIO too - one firmware for HDMI and
+# VGA (autodetected on GPIO12/13), sound on the board's I2S DAC (TDA1387) or
+# PWM, chosen in F12.  HDMI_PIO_AUDIO stays available with -DHDMI_DRIVER=...
+if(PLATFORM STREQUAL "z0" OR PLATFORM STREQUAL "m2")
+    set(HDMI_DRIVER_DEFAULT "HDMI_PIO")
+else()
+    set(HDMI_DRIVER_DEFAULT "HDMI_PIO_AUDIO")
+endif()
+set(HDMI_DRIVER "${HDMI_DRIVER_DEFAULT}" CACHE STRING "HDMI driver: HDMI_PIO_AUDIO, HDMI_PIO or COMPOSITE")
 set_property(CACHE HDMI_DRIVER PROPERTY STRINGS "HDMI_PIO_AUDIO" "HDMI_PIO" "COMPOSITE")
 
+if(HDMI_DRIVER STREQUAL "HDMI_PIO_AUDIO" AND PLATFORM STREQUAL "z0")
+    message(FATAL_ERROR "HDMI_PIO_AUDIO is wired for GPIO6..19; the z0 platform needs HDMI_DRIVER=HDMI_PIO")
+endif()
+
 # Composite TV is software-timed on Core 1 and not wired on the Z0 board.
-if(HDMI_DRIVER STREQUAL "COMPOSITE" AND PLATFORM STREQUAL "z0")
-    message(FATAL_ERROR "Composite TV is not supported on the Z0 platform")
+if(HDMI_DRIVER STREQUAL "COMPOSITE" AND (PLATFORM STREQUAL "z0" OR PLATFORM STREQUAL "pc"))
+    message(FATAL_ERROR "Composite TV is not supported on the ${PLATFORM} platform")
 endif()
 
 # Composite-TV needs ~378 MHz: the TV scanline callback fires via a HW-alarm
@@ -82,6 +100,14 @@ if(PLATFORM STREQUAL "m1")
     set(SD_MISO 4)
     set(HDMI_PIN 6)
     set(TV_PIN 6)
+elseif(PLATFORM STREQUAL "pc")
+    set(PLATFORM_DEF PLATFORM_PC)
+    set(BOARD_DEF BOARD_PC)
+    set(SD_CS 22)
+    set(SD_SCK 6)
+    set(SD_MOSI 7)
+    set(SD_MISO 4)
+    set(HDMI_PIN 12)
 elseif(PLATFORM STREQUAL "z0")
     set(PLATFORM_DEF PLATFORM_Z0)
     set(BOARD_DEF BOARD_Z0)
@@ -109,7 +135,15 @@ endif()
 # port is owned by the TinyUSB host stack, so USB-CDC stdio (serial console)
 # and the boot-time USB-enumeration delay are disabled.  Off by default: the
 # native USB port is then used for USB-CDC printf instead (PS/2 only input).
-option(USB_HID_ENABLED "Enable USB HID host (keyboard + gamepad)" OFF)
+# On the Olimex PICO-PC the USB-A port is the main keyboard port: ON by default.
+# On Z0 the keyboard goes to the native USB Type-C port (OTG adapter): ON too.
+# On M2 (m2p2 kit build) the USB keyboard on the Pico 2 port is the default.
+if(PLATFORM STREQUAL "pc" OR PLATFORM STREQUAL "z0" OR PLATFORM STREQUAL "m2")
+    set(USB_HID_DEFAULT ON)
+else()
+    set(USB_HID_DEFAULT OFF)
+endif()
+option(USB_HID_ENABLED "Enable USB HID host (keyboard + gamepad)" ${USB_HID_DEFAULT})
 
 message(STATUS "frank-micro  Platform: ${PLATFORM}  CPU: ${CPU_SPEED} MHz  Flash: ${FLASH_SPEED} MHz  Voltage: ${CPU_VOLTAGE}  HDMI: ${HDMI_DRIVER}  USB_HID: ${USB_HID_ENABLED}")
 
@@ -148,6 +182,21 @@ if(HDMI_DRIVER STREQUAL "HDMI_PIO_AUDIO")
     # producer bridge (frank_audio.c) resamples to 32000 Hz.  For 32000 Hz the
     # default N=4096 gives CTS=25200 exactly.  (Matches the working frank-cpc.)
     target_compile_definitions(frank_hdmi_sound INTERFACE FRANK_HDMI_AUDIO_RATE=32000)
+    if(PLATFORM STREQUAL "pc")
+        # Olimex PICO-PC: R/G TMDS lanes swapped (blue 14, green 18, red 16).
+        # The pixel clock comes from a PIO state machine instead of a PWM
+        # slice: the default PWM clock on GPIO12/13 is slice 6, which the
+        # board's audio jack also needs (left channel GPIO28 = slice 6 A).
+        # The PIO clock program has no clock divider, so sys_clock must be
+        # exactly the TMDS bit clock (252 MHz).
+        if(CPU_SPEED GREATER 252)
+            message(FATAL_ERROR "PLATFORM=pc with HDMI_PIO_AUDIO requires CPU_SPEED=252")
+        endif()
+        target_compile_definitions(frank_hdmi_sound INTERFACE
+            FRANK_HDMI_PIN_CLK=12 FRANK_HDMI_PIN_D0=14
+            FRANK_HDMI_PIN_D1=18 FRANK_HDMI_PIN_D2=16
+            DVI_USE_PIO_CLOCK=1)
+    endif()
 
     add_library(drivers
         drivers/HDMI_audio.c
@@ -574,6 +623,25 @@ endif()
 # open but is not draining it, the default 500 ms blocking write stalls the
 # audio producer and causes a recurring dropout.  0 = drop chars instead.
 target_compile_definitions(frank-micro PRIVATE PICO_STDIO_USB_STDOUT_TIMEOUT_US=0)
+
+# Output: bin/<build type>/<board>-frank-micro-<video>-<MHz>-<version>.uf2,
+# named like the other emulators of the kit (e.g. PCp2-frank-c64-...).
+if(PLATFORM STREQUAL "pc")
+    set(FRANK_BOARD_PREFIX "PCp2")
+else()
+    set(FRANK_BOARD_PREFIX "${PLATFORM}p2")
+endif()
+if(HDMI_DRIVER STREQUAL "HDMI_PIO_AUDIO")
+    set(FRANK_VIDEO_SUFFIX "HDMI")
+elseif(HDMI_DRIVER STREQUAL "HDMI_PIO")
+    set(FRANK_VIDEO_SUFFIX "HDMI-VGA")
+else()
+    set(FRANK_VIDEO_SUFFIX "TV")
+endif()
+set_target_properties(frank-micro PROPERTIES
+    OUTPUT_NAME "${FRANK_BOARD_PREFIX}-frank-micro-${FRANK_VIDEO_SUFFIX}-${CPU_SPEED}MHz-${FRANK_MICRO_VERSION_STR}"
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/bin/${CMAKE_BUILD_TYPE}"
+    ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/bin/${CMAKE_BUILD_TYPE}")
 
 pico_add_extra_outputs(frank-micro)
 target_link_options(frank-micro PRIVATE -Xlinker --print-memory-usage --data-sections --function-sections)

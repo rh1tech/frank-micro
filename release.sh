@@ -117,8 +117,10 @@ for ENTRY in "${BUILD_MATRIX[@]}"; do
         -DUSB_HID_ENABLED=ON \
         > /dev/null 2>&1 && \
        make -j$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4) > /dev/null 2>&1; then
-        if [[ -f "frank-micro.uf2" ]]; then
-            cp "frank-micro.uf2" "$RELEASE_DIR/$OUTPUT_NAME"
+        # CMake writes <board>-frank-micro-*.uf2 into bin/<build type>/
+        BUILT_UF2=$(ls -t "$SCRIPT_DIR"/bin/*frank-micro*.uf2 "$SCRIPT_DIR"/bin/*/*frank-micro*.uf2 2>/dev/null | head -1)
+        if [[ -n "$BUILT_UF2" && -f "$BUILT_UF2" ]]; then
+            cp "$BUILT_UF2" "$RELEASE_DIR/$OUTPUT_NAME"
             echo -e "  ${GREEN}✓ $LABEL${NC} → release/$OUTPUT_NAME"
             SUCCEEDED+=("$OUTPUT_NAME")
         else
